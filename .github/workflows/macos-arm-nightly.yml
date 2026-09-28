@@ -1,0 +1,202 @@
+# Build unsigned macOS Apple Silicon packages when upstream main moves.
+# Public repo + standard macos-latest runners: no Actions minute charge.
+name: macOS ARM nightly
+on:
+  schedule:
+    # Every 6 hours; job no-ops if upstream SHA unchanged.
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even if upstream SHA matches last successful build"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: macos-arm-nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.25.6"
+  NODE_VERSION: "22"
+  NODE_OPTIONS: --max-old-space-size=4096
+  UPSTREAM: wavetermdev/waveterm
+  UPSTREAM_REF: main
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.gate.outputs.should_build }}
+      upstream_sha: ${{ steps.gate.outputs.upstream_sha }}
+      short_sha: ${{ steps.gate.outputs.short_sha }}
+    steps:
+      - name: Resolve upstream SHA and compare to last build marker
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+        run: |
+          set -euo pipefail
+          UPSTREAM_SHA=$(gh api "repos/${UPSTREAM}/commits/${UPSTREAM_REF}" --jq .sha)
+          SHORT=${UPSTREAM_SHA:0:7}
+          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT}" >> "$GITHUB_OUTPUT"
+          echo "Upstream ${UPSTREAM}@${UPSTREAM_REF} = ${UPSTREAM_SHA}"
+
+          LAST=""
+          if gh api "repos/${{ github.repository }}/contents/.nightly-upstream-sha" --jq .content 2>/dev/null | base64 -d > /tmp/last-sha 2>/dev/null; then
+            LAST=$(tr -d '[:space:]' < /tmp/last-sha || true)
+          fi
+          echo "Last built marker: ${LAST:-<none>}"
+
+          if [[ "${FORCE}" == "true" ]]; then
+            echo "Force build requested"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${LAST}" == "${UPSTREAM_SHA}" ]]; then
+            echo "No upstream change; skipping build"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Upstream changed; will build"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-macos-arm:
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout upstream at resolved SHA
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ needs.check-upstream.outputs.upstream_sha }}
+          fetch-depth: 1
+
+      - name: Overlay nightly workflow helper scripts (none required)
+        run: echo "Building upstream tree ${{ needs.check-upstream.outputs.short_sha }}"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Force git deps to HTTPS
+        run: |
+          git config --global url.https://github.com/.insteadof ssh://git@github.com/
+          git config --global url.https://github.com/.insteadof git@github.com:
+
+      - name: npm ci
+        uses: nick-fields/retry@v3
+        with:
+          command: npm ci --no-audit --no-fund
+          retry_on: error
+          max_attempts: 3
+          timeout_minutes: 10
+        env:
+          GIT_ASKPASS: "echo"
+          GIT_TERMINAL_PROMPT: "0"
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install FPM
+        run: sudo gem install fpm
+
+      - name: Package (unsigned macOS)
+        run: task package
+        env:
+          USE_SYSTEM_FPM: "true"
+          # Intentionally omit CSC_* / APPLE_* so electron-builder skips signing/notarization.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Collect artifacts
+        id: arts
+        run: |
+          set -euo pipefail
+          mkdir -p dist-out
+          # Prefer arm64/Apple Silicon artifacts; fall back to any mac packages.
+          shopt -s nullglob
+          for f in make/*arm64*.dmg make/*arm64*.zip make/*darwin*arm64* make/*.dmg make/*.zip; do
+            [[ -f "$f" ]] || continue
+            cp -v "$f" dist-out/
+          done
+          ls -lah dist-out
+          count=$(find dist-out -type f | wc -l | tr -d ' ')
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          if [[ "${count}" -eq 0 ]]; then
+            echo "No packages found under make/" >&2
+            ls -lah make || true
+            exit 1
+          fi
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wave-macos-arm-${{ needs.check-upstream.outputs.short_sha }}
+          path: dist-out/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish / update rolling GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: nightly
+          SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
+          SHORT: ${{ needs.check-upstream.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          TITLE="Wave macOS ARM nightly (${SHORT})"
+          NOTES="Unofficial unsigned build from \`${UPSTREAM}@${SHA}\`.
+
+          - Runner: \`macos-latest\` (Apple Silicon)
+          - Not code-signed / not notarized — right-click Open or \`xattr -cr\` if Gatekeeper blocks
+          - Built by workflow in this fork; not an official Wave release
+          "
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
+            # Replace assets: delete existing then upload
+            mapfile -t OLD < <(gh release view "$TAG" --json assets --jq '.assets[].name' || true)
+            for name in "${OLD[@]:-}"; do
+              [[ -n "$name" ]] || continue
+              gh release delete-asset "$TAG" "$name" --yes || true
+            done
+            gh release upload "$TAG" dist-out/* --clobber
+          else
+            gh release create "$TAG" dist-out/* --title "$TITLE" --notes "$NOTES" --prerelease
+          fi
+
+      - name: Update upstream SHA marker on default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          CONTENT=$(printf '%s' "$SHA" | base64)
+          PATH_FILE=.nightly-upstream-sha
+          BRANCH=${{ github.event.repository.default_branch }}
+          MSG="chore(nightly): mark upstream ${SHA:0:7}"
+          # Try update existing file
+          if META=$(gh api "repos/${{ github.repository }}/contents/${PATH_FILE}?ref=${BRANCH}" 2>/dev/null); then
+            OLD_SHA=$(printf '%s' "$META" | jq -r .sha)
+            gh api --method PUT "repos/${{ github.repository }}/contents/${PATH_FILE}" \
+              -f message="$MSG" -f content="$CONTENT" -f branch="$BRANCH" -f sha="$OLD_SHA" >/dev/null
+          else
+            gh api --method PUT "repos/${{ github.repository }}/contents/${PATH_FILE}" \
+              -f message="$MSG" -f content="$CONTENT" -f branch="$BRANCH" >/dev/null
+          fi
