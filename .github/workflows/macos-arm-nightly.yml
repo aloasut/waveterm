@@ -209,3 +209,60 @@ jobs:
             gh api --method PUT "repos/${{ github.repository }}/contents/${PATH_FILE}" \
               -f message="$MSG" -f content="$CONTENT" -f branch="$BRANCH" >/dev/null
           fi
+
+      - name: Update homepage nightly status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
+          SHORT: ${{ needs.check-upstream.outputs.short_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          BRANCH=${{ github.event.repository.default_branch }}
+          WHEN=$(date -u +'%Y-%m-%d %H:%M UTC')
+          REPO=${{ github.repository }}
+          DMG="https://github.com/${REPO}/releases/download/nightly/Wave-macos-arm64-nightly.dmg"
+          ZIP="https://github.com/${REPO}/releases/download/nightly/Wave-macos-arm64-nightly.zip"
+          REL="https://github.com/${REPO}/releases/tag/nightly"
+          NEW_BLOCK=$(cat <<EOF
+          <!-- NIGHTLY-STATUS:START -->
+          > **Unofficial macOS ARM nightly (this fork)** — ✅ ready  
+          > Built from [\`wavetermdev/waveterm@${SHORT}\`](https://github.com/wavetermdev/waveterm/commit/${SHA}) · ${WHEN} · [build log](${RUN_URL})  
+          > Download: [**Wave-macos-arm64-nightly.dmg**](${DMG}) · [zip](${ZIP}) · [release notes](${REL})  
+          > Unsigned / not notarized — see [NIGHTLY.md](./NIGHTLY.md). Gatekeeper: right-click → Open, or \`xattr -cr /path/to/Wave.app\`.
+          <!-- NIGHTLY-STATUS:END -->
+          EOF
+          )
+          # Drop accidental leading spaces from heredoc (YAML indent)
+          NEW_BLOCK=$(printf '%s\n' "$NEW_BLOCK" | sed 's/^          //')
+
+          META=$(gh api "repos/${REPO}/contents/README.md?ref=${BRANCH}")
+          OLD_SHA=$(printf '%s' "$META" | jq -r .sha)
+          CONTENT=$(printf '%s' "$META" | jq -r .content | tr -d '\n' | base64 -d)
+
+          if printf '%s' "$CONTENT" | grep -q '<!-- NIGHTLY-STATUS:START -->'; then
+            # Replace existing block (awk avoids sed multiline pain)
+            UPDATED=$(printf '%s\n' "$CONTENT" | awk -v block="$NEW_BLOCK" '
+              BEGIN {replacing=0}
+              /<!-- NIGHTLY-STATUS:START -->/ {
+                print block
+                replacing=1
+                next
+              }
+              /<!-- NIGHTLY-STATUS:END -->/ {
+                replacing=0
+                next
+              }
+              replacing==0 {print}
+            ')
+          else
+            UPDATED="${NEW_BLOCK}"$'\n\n'"${CONTENT}"
+          fi
+
+          B64=$(printf '%s' "$UPDATED" | base64 | tr -d '\n')
+          gh api --method PUT "repos/${REPO}/contents/README.md" \
+            -f message="chore(nightly): refresh homepage status ${SHORT} [skip ci]" \
+            -f content="$B64" \
+            -f branch="$BRANCH" \
+            -f sha="$OLD_SHA" >/dev/null
+          echo "README nightly status updated"
