@@ -224,7 +224,8 @@ jobs:
           DMG="https://github.com/${REPO}/releases/download/nightly/Wave-macos-arm64-nightly.dmg"
           ZIP="https://github.com/${REPO}/releases/download/nightly/Wave-macos-arm64-nightly.zip"
           REL="https://github.com/${REPO}/releases/tag/nightly"
-          NEW_BLOCK=$(cat <<EOF
+          BLOCK_FILE=$(mktemp)
+          cat > "$BLOCK_FILE" <<EOF
           <!-- NIGHTLY-STATUS:START -->
           > **Unofficial macOS ARM nightly (this fork)** — ✅ ready  
           > Built from [\`wavetermdev/waveterm@${SHORT}\`](https://github.com/wavetermdev/waveterm/commit/${SHA}) · ${WHEN} · [build log](${RUN_URL})  
@@ -232,34 +233,33 @@ jobs:
           > Unsigned / not notarized — see [NIGHTLY.md](./NIGHTLY.md). Gatekeeper: right-click → Open, or \`xattr -cr /path/to/Wave.app\`.
           <!-- NIGHTLY-STATUS:END -->
           EOF
-          )
-          # Drop accidental leading spaces from heredoc (YAML indent)
-          NEW_BLOCK=$(printf '%s\n' "$NEW_BLOCK" | sed 's/^          //')
+          # Strip YAML-forced leading indent from heredoc lines
+          sed -i.bak 's/^          //' "$BLOCK_FILE" && rm -f "$BLOCK_FILE.bak"
 
           META=$(gh api "repos/${REPO}/contents/README.md?ref=${BRANCH}")
           OLD_SHA=$(printf '%s' "$META" | jq -r .sha)
-          CONTENT=$(printf '%s' "$META" | jq -r .content | tr -d '\n' | base64 -d)
+          README_FILE=$(mktemp)
+          printf '%s' "$META" | jq -r .content | tr -d '\n' | base64 -d > "$README_FILE"
 
-          if printf '%s' "$CONTENT" | grep -q '<!-- NIGHTLY-STATUS:START -->'; then
-            # Replace existing block (awk avoids sed multiline pain)
-            UPDATED=$(printf '%s\n' "$CONTENT" | awk -v block="$NEW_BLOCK" '
-              BEGIN {replacing=0}
-              /<!-- NIGHTLY-STATUS:START -->/ {
-                print block
-                replacing=1
-                next
-              }
-              /<!-- NIGHTLY-STATUS:END -->/ {
-                replacing=0
-                next
-              }
-              replacing==0 {print}
-            ')
-          else
-            UPDATED="${NEW_BLOCK}"$'\n\n'"${CONTENT}"
-          fi
+          OUT=$(mktemp)
+          python3 - "$BLOCK_FILE" "$README_FILE" "$OUT" <<'PY2'
+          import pathlib, sys
+          block = pathlib.Path(sys.argv[1]).read_text().rstrip() + "\n"
+          text = pathlib.Path(sys.argv[2]).read_text()
+          start, end = "<!-- NIGHTLY-STATUS:START -->", "<!-- NIGHTLY-STATUS:END -->"
+          if start in text and end in text:
+              before = text.split(start, 1)[0]
+              after = text.split(end, 1)[1]
+              # drop one leading newline after end marker if present
+              if after.startswith("\n"):
+                  after = after[1:]
+              updated = before + block + "\n" + after.lstrip("\n") if False else before + block + (after if after.startswith("\n") else "\n" + after)
+          else:
+              updated = block + "\n" + text
+          pathlib.Path(sys.argv[3]).write_text(updated)
+          PY2
 
-          B64=$(printf '%s' "$UPDATED" | base64 | tr -d '\n')
+          B64=$(base64 < "$OUT" | tr -d '\n')
           gh api --method PUT "repos/${REPO}/contents/README.md" \
             -f message="chore(nightly): refresh homepage status ${SHORT} [skip ci]" \
             -f content="$B64" \
