@@ -4,7 +4,11 @@ This public fork builds **unsigned** Apple Silicon packages when [`wavetermdev/w
 
 ## Download
 
-See the rolling **[nightly](../../releases/tag/nightly)** prerelease (assets replaced on each successful build).
+Stable links (same filenames every build; contents refresh when upstream moves):
+
+- [Wave-macos-arm64-nightly.dmg](https://github.com/aloasut/waveterm/releases/download/nightly/Wave-macos-arm64-nightly.dmg)
+- [Wave-macos-arm64-nightly.zip](https://github.com/aloasut/waveterm/releases/download/nightly/Wave-macos-arm64-nightly.zip)
+- [Release page](https://github.com/aloasut/waveterm/releases/tag/nightly)
 
 ## Notes
 

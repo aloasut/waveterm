@@ -136,6 +136,15 @@ jobs:
             [[ -f "$f" ]] || continue
             cp -v "$f" dist-out/
           done
+          # Stable names so README can deep-link without version churn.
+          dmg=(dist-out/*arm64*.dmg dist-out/*.dmg)
+          zip=(dist-out/*arm64*.zip dist-out/*.zip)
+          if [[ -f "${dmg[0]:-}" ]]; then
+            cp -f "${dmg[0]}" dist-out/Wave-macos-arm64-nightly.dmg
+          fi
+          if [[ -f "${zip[0]:-}" ]]; then
+            cp -f "${zip[0]}" dist-out/Wave-macos-arm64-nightly.zip
+          fi
           ls -lah dist-out
           count=$(find dist-out -type f | wc -l | tr -d ' ')
           echo "count=${count}" >> "$GITHUB_OUTPUT"

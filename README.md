@@ -1,3 +1,9 @@
+> **Unofficial macOS ARM nightly (this fork)**  
+> Direct download (updated each successful build):  
+> [**Wave-macos-arm64-nightly.dmg**](https://github.com/aloasut/waveterm/releases/download/nightly/Wave-macos-arm64-nightly.dmg) · [zip](https://github.com/aloasut/waveterm/releases/download/nightly/Wave-macos-arm64-nightly.zip) · [release notes](https://github.com/aloasut/waveterm/releases/tag/nightly)  
+> Unsigned / not notarized — see [NIGHTLY.md](./NIGHTLY.md). Gatekeeper: right-click → Open, or `xattr -cr /path/to/Wave.app`.
+
+
 <p align="center">
   <a href="https://www.waveterm.dev">
 	<picture>
