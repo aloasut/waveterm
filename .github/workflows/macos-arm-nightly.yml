@@ -199,7 +199,7 @@ jobs:
           CONTENT=$(printf '%s' "$SHA" | base64)
           PATH_FILE=.nightly-upstream-sha
           BRANCH=${{ github.event.repository.default_branch }}
-          MSG="chore(nightly): mark upstream ${SHA:0:7}"
+          MSG="chore(nightly): mark upstream ${SHA:0:7} [skip ci]"
           # Try update existing file
           if META=$(gh api "repos/${{ github.repository }}/contents/${PATH_FILE}?ref=${BRANCH}" 2>/dev/null); then
             OLD_SHA=$(printf '%s' "$META" | jq -r .sha)
