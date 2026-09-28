@@ -1,8 +1,10 @@
 <!-- NIGHTLY-STATUS:START -->
-> **Unofficial macOS ARM nightly (this fork)** — ⏳ *pending first successful build*  
-> After the next green run, this block updates automatically with download links.  
-> Tracking: [Actions → macOS ARM nightly](https://github.com/aloasut/waveterm/actions/workflows/macos-arm-nightly.yml) · [NIGHTLY.md](./NIGHTLY.md)
+> **Unofficial macOS ARM nightly (this fork)** — ✅ ready  
+> Built from [`wavetermdev/waveterm@c58bf7f`](https://github.com/wavetermdev/waveterm/commit/c58bf7f346d0a638f3e5d7c77b2688122d36fede) · 2026-09-28 10:25 UTC · [publish log](https://github.com/aloasut/waveterm/actions/runs/36409496389) · [build](https://github.com/aloasut/waveterm/actions/runs/36405694891)  
+> Download: [**Wave-macos-arm64-nightly.dmg**](https://github.com/aloasut/waveterm/releases/download/nightly/Wave-macos-arm64-nightly.dmg) · [zip](https://github.com/aloasut/waveterm/releases/download/nightly/Wave-macos-arm64-nightly.zip) · [release notes](https://github.com/aloasut/waveterm/releases/tag/nightly)  
+> Unsigned / not notarized — see [NIGHTLY.md](./NIGHTLY.md). Gatekeeper: right-click → Open, or `xattr -cr /path/to/Wave.app`.
 <!-- NIGHTLY-STATUS:END -->
+
 
 <p align="center">
   <a href="https://www.waveterm.dev">
