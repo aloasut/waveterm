@@ -165,11 +165,13 @@ jobs:
       - name: Publish / update rolling GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: nightly
           SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
           SHORT: ${{ needs.check-upstream.outputs.short_sha }}
         run: |
           set -euo pipefail
+          # Checkout was upstream; force all gh release ops onto this fork.
           TITLE="Wave macOS ARM nightly (${SHORT})"
           NOTES="Unofficial unsigned build from \`${UPSTREAM}@${SHA}\`.
 
@@ -193,6 +195,7 @@ jobs:
       - name: Update upstream SHA marker on default branch
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
         run: |
           set -euo pipefail
@@ -213,6 +216,7 @@ jobs:
       - name: Update homepage nightly status
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           SHA: ${{ needs.check-upstream.outputs.upstream_sha }}
           SHORT: ${{ needs.check-upstream.outputs.short_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
