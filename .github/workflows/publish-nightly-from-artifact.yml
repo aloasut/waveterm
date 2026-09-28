@@ -1,0 +1,161 @@
+# One-shot: take an already-built workflow artifact and publish the rolling nightly release.
+name: Publish nightly from artifact
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Actions run id that uploaded the macos artifact"
+        required: true
+        type: string
+      artifact_name:
+        description: "Artifact name from that run"
+        required: true
+        type: string
+      upstream_sha:
+        description: "Full upstream SHA this build corresponds to"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: nightly
+      SHA: ${{ inputs.upstream_sha }}
+    steps:
+      - name: Download artifact from prior run
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: dist-out
+
+      - name: Normalize stable filenames
+        run: |
+          set -euo pipefail
+          ls -lah dist-out
+          shopt -s nullglob
+          mapfile -t dmgs < <(find dist-out -type f -name '*.dmg' | sort)
+          mapfile -t zips < <(find dist-out -type f -name '*.zip' | sort)
+          # Prefer arm64 names if present
+          pick_dmg=""
+          pick_zip=""
+          for f in "${dmgs[@]:-}"; do
+            [[ "$f" == *arm64* ]] && pick_dmg=$f && break
+          done
+          [[ -z "$pick_dmg" && ${#dmgs[@]} -gt 0 ]] && pick_dmg=${dmgs[0]}
+          for f in "${zips[@]:-}"; do
+            [[ "$f" == *arm64* ]] && pick_zip=$f && break
+          done
+          [[ -z "$pick_zip" && ${#zips[@]} -gt 0 ]] && pick_zip=${zips[0]}
+          mkdir -p release-out
+          if [[ -n "$pick_dmg" ]]; then
+            cp -f "$pick_dmg" release-out/Wave-macos-arm64-nightly.dmg
+            cp -f "$pick_dmg" "release-out/$(basename "$pick_dmg")"
+          fi
+          if [[ -n "$pick_zip" ]]; then
+            cp -f "$pick_zip" release-out/Wave-macos-arm64-nightly.zip
+            cp -f "$pick_zip" "release-out/$(basename "$pick_zip")"
+          fi
+          ls -lah release-out
+          test -f release-out/Wave-macos-arm64-nightly.dmg
+
+      - name: Publish / update rolling nightly release
+        env:
+          SHORT: ${{ inputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          SHORT=${SHA:0:7}
+          TITLE="Wave macOS ARM nightly (${SHORT})"
+          NOTES="Unofficial unsigned build from \`wavetermdev/waveterm@${SHA}\`.
+
+          - Sourced from Actions artifact (run ${{ inputs.run_id }})
+          - Not code-signed / not notarized
+          - Built by this fork; not an official Wave release
+          "
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
+            mapfile -t OLD < <(gh release view "$TAG" --json assets --jq '.assets[].name' || true)
+            for name in "${OLD[@]:-}"; do
+              [[ -n "$name" ]] || continue
+              gh release delete-asset "$TAG" "$name" --yes || true
+            done
+            gh release upload "$TAG" release-out/* --clobber
+          else
+            gh release create "$TAG" release-out/* --title "$TITLE" --notes "$NOTES" --prerelease
+          fi
+
+      - name: Update upstream SHA marker
+        run: |
+          set -euo pipefail
+          CONTENT=$(printf '%s' "$SHA" | base64)
+          PATH_FILE=.nightly-upstream-sha
+          BRANCH=${{ github.event.repository.default_branch }}
+          MSG="chore(nightly): mark upstream ${SHA:0:7} [skip ci]"
+          if META=$(gh api "repos/${GH_REPO}/contents/${PATH_FILE}?ref=${BRANCH}" 2>/dev/null); then
+            OLD_SHA=$(printf '%s' "$META" | jq -r .sha)
+            gh api --method PUT "repos/${GH_REPO}/contents/${PATH_FILE}" \
+              -f message="$MSG" -f content="$CONTENT" -f branch="$BRANCH" -f sha="$OLD_SHA" >/dev/null
+          else
+            gh api --method PUT "repos/${GH_REPO}/contents/${PATH_FILE}" \
+              -f message="$MSG" -f content="$CONTENT" -f branch="$BRANCH" >/dev/null
+          fi
+
+      - name: Update homepage nightly status
+        env:
+          SHORT_SHA: ${{ inputs.upstream_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BUILD_RUN: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          BRANCH=${{ github.event.repository.default_branch }}
+          WHEN=$(date -u +'%Y-%m-%d %H:%M UTC')
+          SHORT=${SHA:0:7}
+          DMG="https://github.com/${GH_REPO}/releases/download/nightly/Wave-macos-arm64-nightly.dmg"
+          ZIP="https://github.com/${GH_REPO}/releases/download/nightly/Wave-macos-arm64-nightly.zip"
+          REL="https://github.com/${GH_REPO}/releases/tag/nightly"
+          BLOCK_FILE=$(mktemp)
+          cat > "$BLOCK_FILE" <<EOF
+          <!-- NIGHTLY-STATUS:START -->
+          > **Unofficial macOS ARM nightly (this fork)** — ✅ ready  
+          > Built from [\`wavetermdev/waveterm@${SHORT}\`](https://github.com/wavetermdev/waveterm/commit/${SHA}) · ${WHEN} · [publish log](${RUN_URL}) · [build](${{ github.server_url }}/${{ github.repository }}/actions/runs/${BUILD_RUN})  
+          > Download: [**Wave-macos-arm64-nightly.dmg**](${DMG}) · [zip](${ZIP}) · [release notes](${REL})  
+          > Unsigned / not notarized — see [NIGHTLY.md](./NIGHTLY.md). Gatekeeper: right-click → Open, or \`xattr -cr /path/to/Wave.app\`.
+          <!-- NIGHTLY-STATUS:END -->
+          EOF
+          sed -i 's/^          //' "$BLOCK_FILE"
+
+          META=$(gh api "repos/${GH_REPO}/contents/README.md?ref=${BRANCH}")
+          OLD_SHA=$(printf '%s' "$META" | jq -r .sha)
+          README_FILE=$(mktemp)
+          OUT=$(mktemp)
+          printf '%s' "$META" | jq -r .content | tr -d '\n' | base64 -d > "$README_FILE"
+          python3 - "$BLOCK_FILE" "$README_FILE" "$OUT" <<'PY'
+          import pathlib, sys
+          block = pathlib.Path(sys.argv[1]).read_text().rstrip() + "\n"
+          text = pathlib.Path(sys.argv[2]).read_text()
+          start, end = "<!-- NIGHTLY-STATUS:START -->", "<!-- NIGHTLY-STATUS:END -->"
+          if start in text and end in text:
+              before = text.split(start, 1)[0]
+              after = text.split(end, 1)[1]
+              if not after.startswith("\n"):
+                  after = "\n" + after
+              updated = before + block + after
+          else:
+              updated = block + "\n" + text
+          pathlib.Path(sys.argv[3]).write_text(updated)
+          PY
+          B64=$(base64 -w0 < "$OUT" 2>/dev/null || base64 < "$OUT" | tr -d '\n')
+          gh api --method PUT "repos/${GH_REPO}/contents/README.md" \
+            -f message="chore(nightly): refresh homepage status ${SHORT} [skip ci]" \
+            -f content="$B64" \
+            -f branch="$BRANCH" \
+            -f sha="$OLD_SHA" >/dev/null
+          echo "README updated"
